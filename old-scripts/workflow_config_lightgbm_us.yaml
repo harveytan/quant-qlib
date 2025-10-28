@@ -1,0 +1,40 @@
+# this to be run with run.py workflow_config_lightgbm_us.yaml
+qlib_init:
+  provider_uri: "C:/Users/harve/.qlib/qlib_data/us_data"
+  region: us
+
+task:
+  model:
+    class: LGBModel
+    module_path: qlib.contrib.model.gbdt
+    kwargs:
+      loss: mse
+      num_leaves: 128
+      learning_rate: 0.02
+      n_estimators: 500
+      max_depth: 8
+
+  dataset:
+    class: DatasetH
+    module_path: qlib.data.dataset
+    kwargs:
+      handler:
+        class: Alpha158
+        module_path: qlib.contrib.data.handler
+        kwargs:
+          start_time: 2016-01-01
+          end_time: 2023-12-31
+          fit_start_time: 2016-01-01
+          fit_end_time: 2023-12-31
+          instruments: all
+      segments:
+        train: [2017-01-01, 2022-12-31]
+        valid: [2020-01-01, 2020-12-31]
+        test: [2021-01-01, 2022-12-31]
+
+  recorder:
+    class: MLFlowRecorder
+    module_path: qlib.workflow.record
+    kwargs:
+      experiment_name: "lightgbm_us"
+      uri: "file:/C:/ws/qlib/mlruns"
