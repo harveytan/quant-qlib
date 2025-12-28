@@ -1,0 +1,8 @@
+copy ..\qlib\collect_data.bat /y
+copy ..\qlib\dump_to_bin.bat /y
+copy ..\qlib\enrich_data.py /y
+copy ..\qlib\normalize_data.bat /y
+copy ..\qlib\trade_list_with_score_ensemble.py /y
+copy ..\qlib\train.bat /y
+copy ..\qlib\train_ensemble.py /y
+copy ..\qlib\utils.py /y
