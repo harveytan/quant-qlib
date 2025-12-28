@@ -6,3 +6,4 @@ copy ..\qlib\trade_list_with_score_ensemble.py /y
 copy ..\qlib\train.bat /y
 copy ..\qlib\train_ensemble.py /y
 copy ..\qlib\utils.py /y
+copy ..\qlib\test_ground_*.ipynb /y
