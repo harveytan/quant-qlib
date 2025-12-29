@@ -1,3 +1,5 @@
+@echo off
+type NUL > CON
 xcopy /d /y c:\ws\qlib\collect_data.bat
 xcopy /d /y c:\ws\qlib\dump_to_bin.bat
 xcopy /d /y c:\ws\qlib\enrich_data.py

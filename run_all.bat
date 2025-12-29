@@ -7,7 +7,7 @@ call dump_to_bin.bat
 
 :: here manually run training
 :: call train.bat (train_ensemble.py)
-:: use backtest2.py to evaluate the model
+:: use backtest2.py to evaluate the model (inactive now)
 :: use trade_list_with_score_ensemble.py to generate trade list
 
 :: MY_PORTFOLIO = ["APP", "PLTR", "MSFT", "NVDA", "HOOD", "GOOG", "NFLX", "INTC", "COST", "UNH", "RDDT", "AMZN", "RDDT", "META", "MSTR"]
