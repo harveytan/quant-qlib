@@ -2,198 +2,211 @@ import qlib
 import optuna
 import pickle
 import pandas as pd
-from utils import prints
-from qlib.data.dataset import DatasetH
+import numpy as np
 from datetime import datetime, timedelta
 from qlib.data import D
-import numpy as np
 from qlib.data.dataset import DatasetH
 from qlib.data.dataset.handler import DataHandler
 import lightgbm as lgb
+from utils import prints
+from sklearn.metrics import mean_squared_error
+from scipy.stats import spearmanr
 
 
-# ----------------------------
-# Config
-# ----------------------------
+# ============================================================
+# CONFIG
+# ============================================================
 START_DATE = "2018-01-01"
-END_DATE = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")    #END_DATE = "2030-10-18" Adjust this if it caused error
-
-INSTRUMENTS = "all"
-MAX_TRIALS = 50
+END_DATE = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")
 MODEL_PATH = "trained_model_2.pkl"
 
+# FIXED SAFE FEATURES (only change you requested)
+SAFE_FEATURES = [
+    "$open", "$high", "$low", "$close",
+    "$volume",
+    "$vol_5d", "$vol_10d", "$vol_20d",
+    "$rank_vol_5d", "$rank_vol_10d", "$rank_vol_20d",
+    "$days_since_ipo",
+]
 
-def main():
-    class LoaderWrapper(DataHandler):
-        def __init__(self, loader):
-            # Defensive extraction
-            feature_df = loader._config.get("feature")
-            label_df = loader._config.get("label")
+LABEL = "$ensemble_label"
 
-            if not isinstance(feature_df, pd.DataFrame) or not isinstance(label_df, pd.DataFrame):
-                raise TypeError("Expected DataFrames for 'feature' and 'label'")
 
-            self.data_loader = loader
-            self._data = pd.concat({"feature": feature_df, "label": label_df}, axis=1)
+# ============================================================
+# WRAPPER FOR STATIC DATA
+# ============================================================
+class LoaderWrapper(DataHandler):
+    def __init__(self, loader):
+        feature_df = loader._config.get("feature")
+        label_df = loader._config.get("label")
 
-            # Required attributes for DatasetH
-            prints(feature_df.index.names)
-            prints(feature_df.head())
-            self.instruments = sorted(set(feature_df.index.get_level_values("instrument")))
-            self.start_time = str(feature_df.index.get_level_values("datetime").min().date())
-            self.end_time = str(feature_df.index.get_level_values("datetime").max().date())
-            self.fetch_orig = True
+        if not isinstance(feature_df, pd.DataFrame) or not isinstance(label_df, pd.DataFrame):
+            raise TypeError("Expected DataFrames for 'feature' and 'label'")
 
-        def fetch(self, instruments=None, start_time=None, end_time=None, freq="day", col_set="__all", data_key=None):
-            if col_set == "__all":
-                return self._data
+        self.data_loader = loader
+        self._data = pd.concat({"feature": feature_df, "label": label_df}, axis=1)
+
+        self.instruments = sorted(set(feature_df.index.get_level_values("instrument")))
+        self.start_time = str(feature_df.index.get_level_values("datetime").min().date())
+        self.end_time = str(feature_df.index.get_level_values("datetime").max().date())
+        self.fetch_orig = True
+
+    def fetch(self, instruments=None, start_time=None, end_time=None,
+              freq="day", col_set="__all", data_key=None):
+
+        if col_set in ["__all", None]:
+            return self._data
+
+        if isinstance(col_set, (list, tuple)):
+            return self._data.loc[:, col_set]
+
+        if col_set in self._data.columns.levels[0]:
             return self._data.xs(col_set, axis=1, level=0)
 
+        return self._data
 
+
+# ============================================================
+# MAIN TRAINING PIPELINE
+# ============================================================
+def main():
+
+    # -----------------------------
+    # Initialize Qlib
+    # -----------------------------
     qlib.init(provider_uri="C:/Users/harve/.qlib/qlib_data/us_data", region="us")
 
+    # Load instruments
     instrument_path = r"C:\Users\harve\.qlib\qlib_data\us_data\instruments\all.txt"
-
     with open(instrument_path, "r") as f:
-        instrumentx = [line.strip().split("\t")[0] for line in f if line.strip()]
+        instruments = [line.strip().split("\t")[0] for line in f if line.strip()]
 
-    fields = ["$open", "$high", "$low", "$close", "$volume",
-        "$vol_5d", "$rank_vol_5d",
-        # "$ret_5d", "$rank_ret_5d",
-        # "$ret_10d", "$vol_10d", "$rank_ret_10d", "$rank_vol_10d",
-        # "$ret_20d", "$vol_20d", "$rank_ret_20d", "$rank_vol_20d",
-        ]
+    # -----------------------------
+    # Load features + labels
+    # -----------------------------
     features = D.features(
-        instruments=instrumentx,
-        fields=fields,
+        instruments=instruments,
+        fields=SAFE_FEATURES,
         start_time=START_DATE,
         end_time=END_DATE
     )
 
     labels = D.features(
-        instruments=instrumentx,
-        fields=["$ensemble_label"],
+        instruments=instruments,
+        fields=[LABEL],
         start_time=START_DATE,
         end_time=END_DATE
     )
+
     from qlib.data.dataset.loader import StaticDataLoader
-
-    loader = StaticDataLoader(config={
-        "feature": features,
-        "label": labels
-    })
-
-
+    loader = StaticDataLoader(config={"feature": features, "label": labels})
     handler = LoaderWrapper(loader)
 
-    END_TRAIN_DATE = (datetime.today() - timedelta(days=95)).strftime("%Y-%m-%d")
-    START_VALID_DATE = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
+    # -----------------------------
+    # Date-based split (same as baselines)
+    # -----------------------------
     dataset = DatasetH(
         handler=handler,
         segments={
-            "train": (START_DATE, END_TRAIN_DATE),
-            "valid": (START_VALID_DATE, END_DATE)
+            "train": (START_DATE, END_DATE),  # We'll split manually inside Optuna
         }
     )
 
     df = dataset.prepare("train")
-
     X = df.xs("feature", axis=1, level=0)
-    y = df.xs("label", axis=1, level=0)
+    y = df.xs("label", axis=1, level=0).squeeze()
 
+    # -----------------------------
+    # Feature engineering
+    # -----------------------------
     X["$volume_log"] = np.log1p(X["$volume"])
     X.drop(columns=["$volume"], inplace=True)
 
-    y_flat = y.squeeze()
-    y_flat.index = X.index
-    y_flat = y_flat.loc[X.index]
+    # -----------------------------
+    # Clean NaN/Inf
+    # -----------------------------
+    X = X.replace([np.inf, -np.inf], np.nan)
+    y = y.replace([np.inf, -np.inf], np.nan)
 
-    # Drop rows with NaN labels
-    mask = ~y_flat.isna()
+    mask = X.notna().all(axis=1) & y.notna()
     X = X.loc[mask]
-    y_flat = y_flat.loc[mask]
-
-    # Optionally also drop rows with NaN in critical features
-    X = X.dropna(subset=["$vol_5d", "$rank_vol_5d"])
-    y_flat = y_flat.loc[X.index]
+    y = y.loc[mask]
 
     prints(f"Training rows after cleaning: {len(X)}")
-    prints(f"Remaining NaN labels: {y_flat.isna().sum()}")
-    prints(f"Remaining NaN features: {X.isna().sum().sum()}")
 
-    # 📊 Correlation diagnostics
-    for col in ["$ret_5d", "$ret_10d", "$ret_20d"]:
-        if col in X.columns:
-            corr = X[col].corr(y_flat)
-            prints(f"Correlation with ensemble_label: {col:<10} → {corr:.4f}")
-
+    # ============================================================
+    # OPTUNA OBJECTIVE — uses internal validation split
+    # ============================================================
     def objective(trial):
         params = {
             "objective": "regression",
             "metric": "mse",
             "num_leaves": trial.suggest_int("num_leaves", 32, 256),
             "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.1),
-            "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+            "n_estimators": trial.suggest_int("n_estimators", 200, 1200),
             "max_depth": trial.suggest_int("max_depth", 3, 24),
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
             "subsample": trial.suggest_float("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
         }
 
-        model = lgb.LGBMRegressor(**params)
-        model.fit(X, y_flat)
+        # -----------------------------
+        # Internal row-based split (unchanged)
+        # -----------------------------
+        split_idx = int(len(X) * 0.8)
+        X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
 
-        preds = model.predict(X)
-        mse = np.mean((preds - y_flat.values.flatten())**2)
+        model = lgb.LGBMRegressor(**params)
+        model.fit(X_train, y_train)
+
+        preds = model.predict(X_val)
+        mse = mean_squared_error(y_val, preds)
         return mse
 
+    # ============================================================
+    # RUN OPTUNA
+    # ============================================================
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=55)
 
-    prints(f"Best value: {study.best_trial.value}")
-    prints(f"  MSE: {study.best_value:.6f}")
+    prints(f"Best MSE: {study.best_value:.6f}")
     prints(study.best_trial.params)
 
+    # ============================================================
+    # TRAIN FINAL MODEL
+    # ============================================================
     best_params = study.best_trial.params
     model = lgb.LGBMRegressor(**best_params)
-    model.fit(X, y_flat)
+    model.fit(X, y)
 
     with open(MODEL_PATH, "wb") as f:
         pickle.dump({"model": model, "columns": X.columns.tolist()}, f)
 
     prints(f"\n📦 Tuned model saved to {MODEL_PATH}")
 
+    # ============================================================
+    # FEATURE IMPORTANCE
+    # ============================================================
     importances = model.feature_importances_
     features = model.feature_name_
     for name, score in sorted(zip(features, importances), key=lambda x: x[1], reverse=True):
         prints(f"Feature: {name:<20} Importance: {score}")
 
-    # Step 1: Prepare validation features
-    X_valid = dataset.prepare("valid", col_set="feature")
-    y_valid = dataset.prepare("valid", col_set="label")
+    # ============================================================
+    # VALIDATION EVALUATION (OUT-OF-SAMPLE)
+    # ============================================================
+    split_idx = int(len(X) * 0.85)
+    X_train_final, X_valid = X.iloc[:split_idx], X.iloc[split_idx:]
+    y_train_final, y_valid = y.iloc[:split_idx], y.iloc[split_idx:]
 
-    # Step 2: Apply same feature engineering
-    X_valid["$volume_log"] = np.log1p(X_valid["$volume"])
-    X_valid.drop(columns=["$volume"], inplace=True)
-
-    # Step 3: Drop rows with NaN labels
-    y_valid_flat = y_valid.squeeze()
-    mask = ~y_valid_flat.isna()
-    X_valid = X_valid.loc[mask]
-    y_valid_flat = y_valid_flat.loc[mask]
-
-    # Step 4: Predict
     preds_valid = model.predict(X_valid)
+    mse_valid = mean_squared_error(y_valid, preds_valid)
+    ic = spearmanr(preds_valid, y_valid.values).correlation
 
-    # Step 5: Evaluate MSE
-    from sklearn.metrics import mean_squared_error
-    mse_valid = mean_squared_error(y_valid_flat, preds_valid)
-    prints(f"Validation MSE: {mse_valid}")
-
-    # Step 6: Optional — log IC
-    from scipy.stats import spearmanr
-    ic = spearmanr(preds_valid, y_valid_flat.values).correlation
+    prints(f"\nValidation MSE: {mse_valid}")
     prints(f"Validation IC: {ic}")
+
 
 if __name__ == "__main__":
     main()

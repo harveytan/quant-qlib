@@ -11,3 +11,6 @@ xcopy /d /y c:\ws\qlib\utils.py
 xcopy /d /y c:\ws\qlib\test_ground_*.ipynb
 xcopy /d /y c:\ws\qlib\run_all.bat
 xcopy /d /y c:\ws\qlib\baselines\* baselines
+xcopy /d /y c:\ws\qlib\top_long_short.py
+xcopy /d /y c:\ws\qlib\diagnostics_long_short.py
+xcopy /d /y c:\ws\qlib\backtest_long_short.py

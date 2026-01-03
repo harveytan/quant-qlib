@@ -7,10 +7,24 @@ call dump_to_bin.bat
 
 :: here manually run training
 :: call train.bat (train_ensemble.py)
-:: use backtest2.py to evaluate the model (inactive now)
-:: use trade_list_with_score_ensemble.py to generate trade list
 
-:: MY_PORTFOLIO = ["APP", "PLTR", "MSFT", "NVDA", "HOOD", "GOOG", "NFLX", "INTC", "COST", "UNH", "RDDT", "AMZN", "RDDT", "META", "MSTR"]
+:: after training completed, run evaluation -> see model's IC performance:
+:: IC between 0.20–0.30 -> exceptional
+:: IC greater than 0.30+ -> Institutional Grade alpha
+:: code: python diagnostics_long_short.py
+
+:: Rebalance Daily: run top_long_short.py
+:: code:python top_long_short.py
+
+
+:: Backtest:
+:: On each day t:
+:: - Use features at date t
+:: - Predict scores with your model
+:: - Build long/short weights (same build_long_short_portfolio)
+:: - Realized 1‑day PnL ≈ weighted sum of next‑day return \$ ret\_ 1d\$ 
+:: - Repeat over all days, accumulate PnL
+:: code: python backtest_long_short.py
 
 
 :: This is also a self documentation
