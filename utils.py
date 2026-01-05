@@ -1,6 +1,11 @@
 from datetime import datetime
 
-def prints(message, log_file="train_ensemble_log.txt"):
+log_file = "anything_else_log.txt"
+def initialize(filename):
+    global log_file
+    log_file = filename
+
+def prints(message):
     # Print to screen (no timestamp)
     print(message)
 

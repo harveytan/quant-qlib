@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from qlib.data import D
-from utils import prints
+from utils import prints, initialize
 from scipy.stats import spearmanr
 
 
@@ -27,14 +27,17 @@ SAFE_FEATURES = [
 TOP_K_LONG = 20
 TOP_K_SHORT = 20
 
-# 1d forward return for now; we can switch to 5d later
+# Use 5d forward return as PnL driver
 FORWARD_RETURN_FIELD = "$ret_5d"
 
-TC_BPS_PER_SIDE = 5  # 5 bps each way as a placeholder
+# Transaction costs: bps per side applied on turnover
+TC_BPS_PER_SIDE = 10  # bump a bit from 5 to be less cartoonish
 
+RESULTS_CSV_PATH = "backtest_long_short_results.csv"
 
+initialize("logs/backtest_long_short.log")
 # ============================================================
-# PORTFOLIO CONSTRUCTION (same logic as top_long_short)
+# PORTFOLIO CONSTRUCTION (keep your duplicate-safe version)
 # ============================================================
 def build_long_short_portfolio(df_today, top_k_long=20, top_k_short=20):
     """
@@ -45,6 +48,7 @@ def build_long_short_portfolio(df_today, top_k_long=20, top_k_short=20):
 
     df_sorted = df_today.sort_values("score", ascending=False)
 
+    # Initial picks
     longs = df_sorted.head(top_k_long).copy()
     shorts = df_sorted.tail(top_k_short).copy()
 
@@ -52,9 +56,12 @@ def build_long_short_portfolio(df_today, top_k_long=20, top_k_short=20):
     long_names = set(longs["instrument"])
     shorts = shorts[~shorts["instrument"].isin(long_names)]
 
+    # Refill shorts if needed
     if len(shorts) < top_k_short:
         needed = top_k_short - len(shorts)
-        remaining = df_sorted[~df_sorted["instrument"].isin(long_names | set(shorts["instrument"]))]
+        remaining = df_sorted[
+            ~df_sorted["instrument"].isin(long_names | set(shorts["instrument"]))
+        ]
         refill = remaining.tail(needed)
         shorts = pd.concat([shorts, refill], axis=0)
 
@@ -102,7 +109,7 @@ def main():
     prints(f"Model expects {len(model_cols)} features")
 
     # -----------------------------
-    # Load features & forward returns
+    # Load features
     # -----------------------------
     features = D.features(
         instruments=instruments,
@@ -111,7 +118,6 @@ def main():
         end_time=END_DATE,
     )
 
-    # feature engineering
     X_all = features.copy()
     X_all["$volume_log"] = np.log1p(X_all["$volume"])
     X_all.drop(columns=["$volume"], inplace=True)
@@ -120,7 +126,9 @@ def main():
     X_all = X_all.fillna(0)
     X_all = X_all.reindex(columns=model_cols)
 
-    # forward returns for PnL
+    # -----------------------------
+    # Load forward returns
+    # -----------------------------
     fwd = D.features(
         instruments=instruments,
         fields=[FORWARD_RETURN_FIELD],
@@ -128,71 +136,67 @@ def main():
         end_time=END_DATE,
     )
 
-    # align indices
+    # Align indices
     common_index = X_all.index.intersection(fwd.index)
     X_all = X_all.loc[common_index]
     fwd = fwd.loc[common_index]
 
-    # -----------------------------
-    # Prepare date loop
-    # -----------------------------
     dt_idx = X_all.index.get_level_values("datetime")
-    instruments_idx = X_all.index.get_level_values("instrument")
     unique_dates = np.sort(dt_idx.unique())
 
-    # series to accumulate results
+    if len(unique_dates) < 10:
+        prints("Not enough dates after alignment; check data setup.")
+        return
+
+    prints(f"Backtest from {unique_dates[0]} to {unique_dates[-1]}")
+
     daily_pnl = []
     daily_gross_exposure = []
     daily_turnover = []
     daily_dates = []
 
-    prev_weights = None  # for turnover
+    prev_weights = None  # for turnover calc
 
-    prints(f"Backtest from {unique_dates[0]} to {unique_dates[-1]}")
+    # IMPORTANT: since FORWARD_RETURN_FIELD is 5d, skip last 5 days
+    horizon = 5
+    for i in range(len(unique_dates) - horizon):
+        current_date = unique_dates[i]
+        next_date = unique_dates[i + 1]  # we still use the label at current_date
 
-    for current_date in unique_dates[:-1]:  # last date can't have 1d forward return
-        # slice today's features
+        # Features at current_date
         mask_today = dt_idx == current_date
         X_today = X_all.loc[mask_today].copy()
-
         if X_today.empty:
             continue
 
-        df_today = X_today.reset_index()  # instrument, datetime as columns
+        df_today = X_today.reset_index()
 
-        # predict scores
+        # Predict scores
         scores = model.predict(X_today)
         df_today["score"] = scores
 
-        # build portfolio
+        # Build portfolio at t
         portfolio = build_long_short_portfolio(
             df_today,
             top_k_long=TOP_K_LONG,
             top_k_short=TOP_K_SHORT,
         )
 
-        # next day's returns for instruments in portfolio
-        next_date = unique_dates[np.searchsorted(unique_dates, current_date) + 1]
-        mask_next = (dt_idx == next_date)
-        fwd_next = fwd.loc[mask_next]
+        # Forward return at t for those instruments (already 5d ahead in Qlib label)
+        fwd_t = fwd.loc[mask_today].reset_index()
+        fwd_t = fwd_t[["instrument", FORWARD_RETURN_FIELD]]
 
-        # align by instrument
-        fwd_next = fwd_next.reset_index()
-        fwd_next = fwd_next[["instrument", FORWARD_RETURN_FIELD]]
+        port = portfolio.merge(fwd_t, on="instrument", how="left")
 
-        port = portfolio.merge(fwd_next, on="instrument", how="left")
-
-        # compute PnL: sum(weight * forward_return)
         valid = port[FORWARD_RETURN_FIELD].notna()
         port_valid = port[valid]
-
         if port_valid.empty:
             continue
 
+        # Gross PnL: sum(weight * forward_return)
         pnl_gross = (port_valid["weight"] * port_valid[FORWARD_RETURN_FIELD]).sum()
 
-        # transaction costs (very simple approximation)
-        # turnover = sum |w_t - w_{t-1}| / 2
+        # Turnover: compare to previous day's weights
         if prev_weights is None:
             turnover = port_valid["weight"].abs().sum() / 2.0
         else:
@@ -201,46 +205,45 @@ def main():
             aligned = pd.concat([prev, curr], axis=1, keys=["prev", "curr"]).fillna(0.0)
             turnover = (aligned["curr"] - aligned["prev"]).abs().sum() / 2.0
 
-        tc = turnover * (TC_BPS_PER_SIDE / 10000.0) * 2.0  # both sides
+        # Transaction costs (both sides)
+        tc = turnover * (TC_BPS_PER_SIDE / 10000.0) * 2.0
 
         pnl_net = pnl_gross - tc
 
         daily_pnl.append(pnl_net)
         daily_gross_exposure.append(port_valid["weight"].abs().sum())
         daily_turnover.append(turnover)
-        daily_dates.append(next_date)
+        daily_dates.append(next_date)  # PnL realized between t and t+1 on 5d label
 
         prev_weights = port_valid[["instrument", "weight"]].copy()
 
-    # -----------------------------
-    # Aggregate results
-    # -----------------------------
     if not daily_pnl:
-        prints("No PnL computed; check data coverage.")
+        prints("No PnL computed; check loop logic / data.")
         return
 
-    results = pd.DataFrame({
-        "date": pd.to_datetime(daily_dates),
-        "pnl": daily_pnl,
-        "gross_exposure": daily_gross_exposure,
-        "turnover": daily_turnover,
-    }).set_index("date")
+    results = pd.DataFrame(
+        {
+            "date": pd.to_datetime(daily_dates),
+            "pnl": daily_pnl,
+            "gross_exposure": daily_gross_exposure,
+            "turnover": daily_turnover,
+        }
+    ).set_index("date")
 
     results["cum_pnl"] = results["pnl"].cumsum()
-    results["return"] = results["pnl"]  # assuming 1.0 capital base for now
+    # Assume capital base of 1.0
+    results["return"] = results["pnl"]
 
-    # Sharpe (daily -> annualized ~ sqrt(252))
     mu = results["return"].mean()
     sigma = results["return"].std()
     sharpe = mu / sigma * np.sqrt(252) if sigma > 0 else np.nan
 
-    # max drawdown
     cum = results["cum_pnl"]
     peak = cum.cummax()
     drawdown = cum - peak
     max_dd = drawdown.min()
 
-    prints("\n===== BACKTEST SUMMARY =====")
+    prints("\n===== BACKTEST SUMMARY (Option B v2) =====")
     prints(f"Total days: {len(results)}")
     prints(f"Total PnL: {results['cum_pnl'].iloc[-1]:.4f}")
     prints(f"Annualized Sharpe: {sharpe:.2f}")
@@ -248,9 +251,12 @@ def main():
     prints(f"Average daily turnover: {results['turnover'].mean():.4f}")
     prints(f"Average daily gross exposure: {results['gross_exposure'].mean():.4f}")
 
-    # optional: print last few rows for sanity
     prints("\nLast 5 days of PnL:")
     prints(results.tail(5))
+
+    # Save for plotting / further analysis
+    results.to_csv(RESULTS_CSV_PATH)
+    prints(f"\nSaved backtest results to {RESULTS_CSV_PATH}")
 
 
 if __name__ == "__main__":

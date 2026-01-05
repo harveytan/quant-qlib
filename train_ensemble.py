@@ -8,7 +8,7 @@ from qlib.data import D
 from qlib.data.dataset import DatasetH
 from qlib.data.dataset.handler import DataHandler
 import lightgbm as lgb
-from utils import prints
+from utils import prints, initialize
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr
 
@@ -31,6 +31,7 @@ SAFE_FEATURES = [
 
 LABEL = "$ensemble_label"
 
+initialize("logs/train_ensemble.log")
 
 # ============================================================
 # WRAPPER FOR STATIC DATA
@@ -207,6 +208,76 @@ def main():
     prints(f"\nValidation MSE: {mse_valid}")
     prints(f"Validation IC: {ic}")
 
+    # ============================================================
+    # BUILD df_eval FOR STABILITY MODULES
+    # ============================================================
+    # Your X_valid index is MultiIndex: (date, instrument)
+    df_eval = pd.DataFrame({
+        "date": X_valid.index.get_level_values(0),
+        "symbol": X_valid.index.get_level_values(1),
+        "pred": preds_valid,
+        "label": y_valid.values,
+    })
+
+    # ============================================================
+    # RUN STABILITY CHECKS
+    # ============================================================
+    from pathlib import Path
+    from stability.rolling_ic import compute_daily_ic
+    from stability import (
+        run_rolling_ic_monitor,
+        run_model_stability_check,
+    )
+
+    STABILITY_DIR = Path("stability_outputs")
+    STABILITY_DIR.mkdir(exist_ok=True, parents=True)
+
+    # ---------------------------
+    # 1) Rolling IC Stability
+    # ---------------------------
+    ic_series = compute_daily_ic(df_eval)
+    rolling_summary = run_rolling_ic_monitor(
+        ic_series,
+        out_dir=STABILITY_DIR / "rolling_ic",
+    )
+    prints(f"\n📈 Rolling IC summary: {rolling_summary}")
+
+    # ---------------------------
+    # 2) Model Stability vs Previous Model
+    # ---------------------------
+    prev_dir = Path("models") / "last_model"
+    curr_dir = Path("models") / "current_model"
+
+    # Save current model artifacts for comparison
+    Path(curr_dir).mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"feature": features, "importance": importances}).to_csv(
+        Path(curr_dir) / "feature_importance.csv", index=False
+    )
+    df_eval.to_csv(Path(curr_dir) / "predictions.csv", index=False)
+
+    if prev_dir.exists():
+        old_importance = pd.read_csv(prev_dir / "feature_importance.csv").set_index("feature")["importance"]
+        new_importance = pd.read_csv(curr_dir / "feature_importance.csv").set_index("feature")["importance"]
+
+        old_pred = pd.read_csv(prev_dir / "predictions.csv").set_index(["date", "symbol"])["pred"]
+        new_pred = df_eval.set_index(["date", "symbol"])["pred"]
+
+        stability_summary = run_model_stability_check(
+            old_importance=old_importance,
+            new_importance=new_importance,
+            old_pred=old_pred,
+            new_pred=new_pred,
+            out_dir=STABILITY_DIR / "model_stability",
+        )
+        prints(f"\n🧱 Model stability summary: {stability_summary}")
+    else:
+        prints("\nℹ️ No previous model found — skipping model stability check.")
+
+    # After finishing, move current_model → last_model for next run
+    import shutil
+    if Path(curr_dir).exists():
+        shutil.rmtree(prev_dir, ignore_errors=True)
+        shutil.copytree(curr_dir, prev_dir)
 
 if __name__ == "__main__":
     main()

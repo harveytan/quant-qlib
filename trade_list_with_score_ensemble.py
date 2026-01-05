@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import pickle
 from datetime import datetime, timedelta
-from utils import prints
+from utils import prints, initialize
 import qlib
 from qlib.data import D
 
@@ -29,6 +29,7 @@ def main():
     # for name, score in sorted_importance:
     #     printx(f"  {name:<20} {score:>8}")
 
+    initialize("logs/trade_list_ensemble_log.txt")
 
     # ✅ Define date range and instruments
     START_DATE = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d") #START_DATE = "2025-01-01"

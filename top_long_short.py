@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from qlib.data import D
-from utils import prints
+from utils import prints, initialize
 from scipy.stats import spearmanr
 
 
@@ -28,6 +28,7 @@ TOP_K_LONG = 20
 TOP_K_SHORT = 20
 IC_WINDOW_DAYS = 60
 
+initialize("logs/top_long_short.log")
 
 # ============================================================
 # PORTFOLIO CONSTRUCTION (Option A)

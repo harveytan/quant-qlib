@@ -8,7 +8,7 @@ call dump_to_bin.bat
 :: here manually run training
 :: call train.bat (train_ensemble.py)
 
-:: after training completed, run evaluation -> see model's IC performance:
+:: after training completed, run evaluation -> see model's IC (Information Coefficient) performance:
 :: IC between 0.20–0.30 -> exceptional
 :: IC greater than 0.30+ -> Institutional Grade alpha
 :: code: python diagnostics_long_short.py

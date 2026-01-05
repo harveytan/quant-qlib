@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from qlib.data import D
-from utils import prints
+from utils import prints, initialize
 from scipy.stats import spearmanr
 
 
@@ -30,7 +30,7 @@ IC_WINDOW_DAYS = 60
 BUCKETS = 5
 IPO_CUTOFF = 600  # ~1 year of trading days
 
-
+initialize("logs/diagnostics_long_short.log")
 # ============================================================
 # MAIN
 # ============================================================
