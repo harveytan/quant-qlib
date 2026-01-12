@@ -5,3 +5,6 @@ from .model_stability import (
     rank_stability,
     run_model_stability_check,
 )
+from .feature_drift import (
+    run_feature_drift_monitor,
+)

@@ -129,11 +129,16 @@ def main():
     X = X.replace([np.inf, -np.inf], np.nan)
     y = y.replace([np.inf, -np.inf], np.nan)
 
+
     mask = X.notna().all(axis=1) & y.notna()
     X = X.loc[mask]
     y = y.loc[mask]
-
     prints(f"Training rows after cleaning: {len(X)}")
+
+    # Save a sample of training features for drift monitoring
+    train_sample = X.sample(n=50000, random_state=42)  # or use full X if small
+    train_sample.to_parquet("artifacts/train_features_sample.parquet")
+    prints("Saved training feature sample for drift monitoring.")
 
     # ============================================================
     # OPTUNA OBJECTIVE — uses internal validation split

@@ -2,7 +2,7 @@
 call collect_data.bat
 call normalize_data.bat
 start "" /WAIT python enrich_data.py
-start "" /WAIT python -m baselines.run_baselines.py
+start "" /WAIT python -m baselines.run_baselines
 call dump_to_bin.bat
 
 :: here manually run training
@@ -14,8 +14,9 @@ call dump_to_bin.bat
 :: code: python diagnostics_long_short.py
 
 :: Rebalance Daily: run top_long_short.py
+:: Log daily rule-base trades: run daily_inference.py
 :: code:python top_long_short.py
-
+:: code:python daily_inference.py
 
 :: Backtest:
 :: On each day t:

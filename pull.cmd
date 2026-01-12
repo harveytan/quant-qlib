@@ -15,3 +15,5 @@ xcopy /d /y c:\ws\qlib\top_long_short.py
 xcopy /d /y c:\ws\qlib\diagnostics_long_short.py
 xcopy /d /y c:\ws\qlib\backtest_long_short.py
 xcopy /d /y c:\ws\qlib\stability\*.py stability\
+xcopy /d /y c:\ws\qlib\daily_inference.py
+xcopy /d /y c:\ws\qlib\pipeline\*.py pipeline
