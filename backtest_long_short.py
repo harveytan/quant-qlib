@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from qlib.data import D
-from utils import prints, initialize
+from pipeline.utils import prints, init_log_file
 from scipy.stats import spearmanr
 
 
@@ -35,7 +35,7 @@ TC_BPS_PER_SIDE = 10  # bump a bit from 5 to be less cartoonish
 
 RESULTS_CSV_PATH = "backtest_long_short_results.csv"
 
-initialize("logs/backtest_long_short.log")
+init_log_file("logs/backtest_long_short.log")
 # ============================================================
 # PORTFOLIO CONSTRUCTION (keep your duplicate-safe version)
 # ============================================================

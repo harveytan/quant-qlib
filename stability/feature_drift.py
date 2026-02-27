@@ -3,6 +3,26 @@ import pandas as pd
 from scipy.stats import ks_2samp
 from pathlib import Path
 import json
+from pipeline.utils import prints
+
+# [DAILY] Feature drift summary: {'date': '2025-12-26', 'n_features': 12, 'n_alerts': 10, 'max_psi': 1.3676453113723086, 'max_ks': 0.7435897435897436}
+# n_feature: total number of features monitored
+# n_alerts: 10 out 12 features triggered drift alerts - huge number - not small drift - this is a regime shift or data distribution shift.
+# PSI (population stability index) : is the most important drift metric:
+#  - psi < 0.1 : no significant drift
+#  - 01. - 0.25 : moderate drift
+#  - >0.25 : significant drift
+#  - > 1: catastrophic drift
+# KS (Kolmogorov–Smirnov distance) measures distribution shape difference.
+# Interpretation:
+#  • 0.0–0.1 → similar distributions
+#  • 0.1–0.2 → mild drift
+#  • 0.2–0.3 → moderate drift
+#  • > 0.3 → strong drift
+#  • > 0.5 → severe drift
+#  • > 0.7 → massive drift
+# Your KS = 0.74 → this is extremely high.
+# This means the shape of at least one feature’s distribution is completely different from training.
 
 
 def compute_psi(expected: np.ndarray, actual: np.ndarray, buckets: int = 10) -> float:
@@ -88,7 +108,6 @@ def drift_alerts(drift_df: pd.DataFrame) -> pd.DataFrame:
     ]
     return alerts.sort_values(["psi", "ks"], ascending=False)
 
-
 def run_feature_drift_monitor(
     train_feature_sample: pd.DataFrame,
     daily_features: pd.DataFrame,
@@ -101,6 +120,7 @@ def run_feature_drift_monitor(
     out_dir: base directory for stability outputs
     date_str: e.g. '2025-01-03'
     """
+    prints(f"[DRIFT] Running drift monitor for {date_str}", level="info")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +131,9 @@ def run_feature_drift_monitor(
     alerts_path = out_dir / f"feature_drift_alerts_{date_str}.csv"
 
     drift_df.to_csv(drift_path)
+    prints(f"[DRIFT] Drift CSV saved to: {drift_path}", level="info")
     alerts_df.to_csv(alerts_path)
+    prints(f"[DRIFT] Alerts CSV saved to: {alerts_path}", level="info")
 
     summary = {
         "date": date_str,
@@ -120,6 +142,7 @@ def run_feature_drift_monitor(
         "max_psi": float(drift_df["psi"].max(skipna=True)),
         "max_ks": float(drift_df["ks"].max(skipna=True)),
     }
+    prints(f"[DRIFT] Summary: {summary}", level="info")
 
     with open(out_dir / f"feature_drift_summary_{date_str}.json", "w") as f:
         json.dump(summary, f, indent=2)

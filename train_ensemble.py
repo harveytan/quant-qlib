@@ -8,7 +8,9 @@ from qlib.data import D
 from qlib.data.dataset import DatasetH
 from qlib.data.dataset.handler import DataHandler
 import lightgbm as lgb
-from utils import prints, initialize
+from lightgbm import early_stopping
+from sklearn.model_selection import TimeSeriesSplit
+from pipeline.utils import prints, init_log_file, add_cross_sectional_features, g_safe_features, load_merge_and_save_calibration
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr
 
@@ -21,18 +23,11 @@ END_DATE = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")
 MODEL_PATH = "trained_model_2.pkl"
 
 # FIXED SAFE FEATURES (only change you requested)
-SAFE_FEATURES = [
-    "$open", "$high", "$low", "$close",
-    "$volume",
-    "$vol_5d", "$vol_10d", "$vol_20d",
-    "$rank_vol_5d", "$rank_vol_10d", "$rank_vol_20d",
-    "$days_since_ipo",
-]
+SAFE_FEATURES = g_safe_features()
 
 LABEL = "$ensemble_label"
 
-initialize("logs/train_ensemble.log")
-
+init_log_file("logs/train_ensemble.log")
 # ============================================================
 # WRAPPER FOR STATIC DATA
 # ============================================================
@@ -72,6 +67,7 @@ class LoaderWrapper(DataHandler):
 # ============================================================
 def main():
 
+    prints('=== Starting Ensemble Training Pipeline ===')
     # -----------------------------
     # Initialize Qlib
     # -----------------------------
@@ -113,26 +109,43 @@ def main():
         }
     )
 
+    # ============================================================
+    # Load prepared dataset
+    # ============================================================
     df = dataset.prepare("train")
     X = df.xs("feature", axis=1, level=0)
-    y = df.xs("label", axis=1, level=0).squeeze()
+    y = df.xs("label", axis=1, level=0).iloc[:, 0]
 
-    # -----------------------------
-    # Feature engineering
-    # -----------------------------
-    X["$volume_log"] = np.log1p(X["$volume"])
-    X.drop(columns=["$volume"], inplace=True)
+    X = add_cross_sectional_features(X)
 
-    # -----------------------------
-    # Clean NaN/Inf
-    # -----------------------------
+    X = X.sort_index()
+    y = y.sort_index()
+
+    # 1. Replace inf with NaN
     X = X.replace([np.inf, -np.inf], np.nan)
     y = y.replace([np.inf, -np.inf], np.nan)
 
+    # 2. Drop rows with NaN labels
+    valid = y.notna()
+    X = X.loc[valid]
+    y = y.loc[valid]
 
-    mask = X.notna().all(axis=1) & y.notna()
-    X = X.loc[mask]
-    y = y.loc[mask]
+    # 3. Fill NaNs in features only
+    X = X.fillna(0)
+
+    dates = X.index.get_level_values("datetime").unique().sort_values()
+    date_index = X.index.get_level_values("datetime")
+
+    tscv = TimeSeriesSplit(n_splits=5)
+    date_folds = []
+
+    for train_date_idx, val_date_idx in tscv.split(dates):
+        train_dates = dates[train_date_idx]
+        val_dates = dates[val_date_idx]
+        train_mask = date_index.isin(train_dates)
+        val_mask = date_index.isin(val_dates)
+        date_folds.append((train_mask, val_mask))
+
     prints(f"Training rows after cleaning: {len(X)}")
 
     # Save a sample of training features for drift monitoring
@@ -147,49 +160,88 @@ def main():
         params = {
             "objective": "regression",
             "metric": "mse",
-            "num_leaves": trial.suggest_int("num_leaves", 32, 256),
-            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.1),
-            "n_estimators": trial.suggest_int("n_estimators", 200, 1200),
-            "max_depth": trial.suggest_int("max_depth", 3, 24),
-            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "verbosity": -1,
+            "boosting_type": "gbdt",
+            "random_state": 42,
+
+            "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.03, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", 16, 256),
+            "max_depth": -1,
+
+            "min_child_samples": trial.suggest_int("min_child_samples", 10, 150),
+            "min_child_weight": trial.suggest_float("min_child_weight", 1e-4, 20.0, log=True),
+            "min_gain_to_split": trial.suggest_float("min_gain_to_split", 1e-8, 5.0, log=True),
+
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "subsample_freq": trial.suggest_int("subsample_freq", 1, 7),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+
+            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 100.0, log=True),
+            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 100.0, log=True),
+
+            "max_bin": trial.suggest_int("max_bin", 128, 1024),
+            "n_estimators": trial.suggest_int("n_estimators", 500, 8000),
         }
+        fold_mse = []
+        best_iterations = []
 
-        # -----------------------------
-        # Internal row-based split (unchanged)
-        # -----------------------------
-        split_idx = int(len(X) * 0.8)
-        X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
+        for train_mask, val_mask in date_folds:
 
-        model = lgb.LGBMRegressor(**params)
-        model.fit(X_train, y_train)
+            X_train = X.loc[train_mask]
+            y_train = y.loc[train_mask]
 
-        preds = model.predict(X_val)
-        mse = mean_squared_error(y_val, preds)
-        return mse
+            X_val = X.loc[val_mask]
+            y_val = y.loc[val_mask]
+
+            model = lgb.LGBMRegressor(**params)
+
+            model.fit(
+                X_train,
+                y_train,
+                eval_set=[(X_val, y_val)],
+                eval_metric="mse",
+                callbacks=[
+                    early_stopping(100, verbose=False)
+                ],
+            )
+
+            preds = model.predict(X_val, num_iteration=model.best_iteration_)
+
+            mse = mean_squared_error(y_val, preds)
+            fold_mse.append(mse)
+
+            best_iterations.append(model.best_iteration_)
+
+        # Store best iteration for final training
+        trial.set_user_attr(
+            "best_iteration",
+            int(np.mean(best_iterations))
+        )
+        return float(np.mean(fold_mse))
 
     # ============================================================
     # RUN OPTUNA
     # ============================================================
     study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=55)
+    study.optimize(objective, n_trials=500)
 
     prints(f"Best MSE: {study.best_value:.6f}")
-    prints(study.best_trial.params)
+    prints(f"Best params: {study.best_trial.params}")
 
     # ============================================================
     # TRAIN FINAL MODEL
     # ============================================================
     best_params = study.best_trial.params
+    if "best_iteration" in study.best_trial.user_attrs:
+        best_params["n_estimators"] = study.best_trial.user_attrs["best_iteration"]
+
     model = lgb.LGBMRegressor(**best_params)
     model.fit(X, y)
 
     with open(MODEL_PATH, "wb") as f:
         pickle.dump({"model": model, "columns": X.columns.tolist()}, f)
 
-    prints(f"\n📦 Tuned model saved to {MODEL_PATH}")
+    prints(f"📦 Tuned model saved to {MODEL_PATH}")
 
     # ============================================================
     # FEATURE IMPORTANCE
@@ -207,10 +259,17 @@ def main():
     y_train_final, y_valid = y.iloc[:split_idx], y.iloc[split_idx:]
 
     preds_valid = model.predict(X_valid)
+
+    # ============================================================
+    # load, merge enriched data with scores and save
+    # ============================================================
+    load_merge_and_save_calibration(model, X)
+
+
     mse_valid = mean_squared_error(y_valid, preds_valid)
     ic = spearmanr(preds_valid, y_valid.values).correlation
 
-    prints(f"\nValidation MSE: {mse_valid}")
+    prints(f"Validation MSE: {mse_valid}")
     prints(f"Validation IC: {ic}")
 
     # ============================================================
@@ -230,7 +289,7 @@ def main():
     from pathlib import Path
     from stability.rolling_ic import compute_daily_ic
     from stability import (
-        run_rolling_ic_monitor,
+        run_rolling_ic_monitor_training,
         run_model_stability_check,
     )
 
@@ -241,11 +300,11 @@ def main():
     # 1) Rolling IC Stability
     # ---------------------------
     ic_series = compute_daily_ic(df_eval)
-    rolling_summary = run_rolling_ic_monitor(
+    rolling_summary = run_rolling_ic_monitor_training(
         ic_series,
         out_dir=STABILITY_DIR / "rolling_ic",
     )
-    prints(f"\n📈 Rolling IC summary: {rolling_summary}")
+    prints(f"📈 Rolling IC summary: {rolling_summary}")
 
     # ---------------------------
     # 2) Model Stability vs Previous Model
@@ -264,19 +323,29 @@ def main():
         old_importance = pd.read_csv(prev_dir / "feature_importance.csv").set_index("feature")["importance"]
         new_importance = pd.read_csv(curr_dir / "feature_importance.csv").set_index("feature")["importance"]
 
-        old_pred = pd.read_csv(prev_dir / "predictions.csv").set_index(["date", "symbol"])["pred"]
-        new_pred = df_eval.set_index(["date", "symbol"])["pred"]
+        old_pred = (pd.read_csv(prev_dir / "predictions.csv").set_index(["date", "symbol"])["pred"])
+        new_pred = (df_eval.set_index(["date", "symbol"])["pred"])
 
+        # ---------------------------
+        # ALIGN PREDICTIONS HERE
+        # ---------------------------
+        aligned = (pd.DataFrame({"old": old_pred}).join(pd.DataFrame({"new": new_pred}), how="inner").dropna())
+
+        # Extract aligned vectors
+        old_pred_aligned = aligned["old"]
+        new_pred_aligned = aligned["new"]
+
+        # Now run stability check with aligned predictions
         stability_summary = run_model_stability_check(
             old_importance=old_importance,
             new_importance=new_importance,
-            old_pred=old_pred,
-            new_pred=new_pred,
+            old_pred=old_pred_aligned,
+            new_pred=new_pred_aligned,
             out_dir=STABILITY_DIR / "model_stability",
         )
-        prints(f"\n🧱 Model stability summary: {stability_summary}")
+        prints(f"🧱 Model stability summary: {stability_summary}")
     else:
-        prints("\nℹ️ No previous model found — skipping model stability check.")
+        prints("ℹ️ No previous model found — skipping model stability check.")
 
     # After finishing, move current_model → last_model for next run
     import shutil

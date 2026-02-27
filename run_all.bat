@@ -1,5 +1,6 @@
 @echo on
 call collect_data.bat
+start "" /WAIT python -m scripts.run_daily_update
 call normalize_data.bat
 start "" /WAIT python enrich_data.py
 start "" /WAIT python -m baselines.run_baselines
@@ -17,6 +18,10 @@ call dump_to_bin.bat
 :: Log daily rule-base trades: run daily_inference.py
 :: code:python top_long_short.py
 :: code:python daily_inference.py
+
+
+:: Run reports:
+:: python dashboard.py or run it on notebook test_ground_dashboard.ipynb
 
 :: Backtest:
 :: On each day t:

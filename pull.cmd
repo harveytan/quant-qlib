@@ -1,19 +1,8 @@
 @echo off
 type NUL > CON
-xcopy /d /y c:\ws\qlib\collect_data.bat
-xcopy /d /y c:\ws\qlib\dump_to_bin.bat
-xcopy /d /y c:\ws\qlib\enrich_data.py
-xcopy /d /y c:\ws\qlib\normalize_data.bat
-xcopy /d /y c:\ws\qlib\trade_list_with_score_ensemble.py
-xcopy /d /y c:\ws\qlib\train.bat
-xcopy /d /y c:\ws\qlib\train_ensemble.py
-xcopy /d /y c:\ws\qlib\utils.py
-xcopy /d /y c:\ws\qlib\test_ground_*.ipynb
-xcopy /d /y c:\ws\qlib\run_all.bat
-xcopy /d /y c:\ws\qlib\baselines\* baselines
-xcopy /d /y c:\ws\qlib\top_long_short.py
-xcopy /d /y c:\ws\qlib\diagnostics_long_short.py
-xcopy /d /y c:\ws\qlib\backtest_long_short.py
-xcopy /d /y c:\ws\qlib\stability\*.py stability\
-xcopy /d /y c:\ws\qlib\daily_inference.py
-xcopy /d /y c:\ws\qlib\pipeline\*.py pipeline
+xcopy /d /y c:\ws\qlib\*.bat
+xcopy /d /y c:\ws\qlib\*.py
+xcopy /d /y c:\ws\qlib\*.ipynb
+xcopy /d /s /y c:\ws\qlib\baselines\* baselines\
+xcopy /d /s /y c:\ws\qlib\stability\*.py stability\
+xcopy /d /s /y c:\ws\qlib\pipeline\*.py pipeline\
